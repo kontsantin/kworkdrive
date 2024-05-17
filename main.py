@@ -1,8 +1,13 @@
 import json
+import re
+import os
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 import time
+from bs4 import BeautifulSoup
+from markdownify import markdownify as md
+import pandas as pd
 
 # Настройки для ChromeDriver
 options = webdriver.ChromeOptions()
@@ -13,59 +18,116 @@ options.add_argument("--disable-blink-features=AutomationControlled")
 s = Service(executable_path="C:\\chromedriver\\chromedriver.exe")
 driver = webdriver.Chrome(service=s, options=options)
 
-try:
-    driver.get("https://www.drive.ru/tires")
-    time.sleep(10)  # Даем время для загрузки страницы
+def clean_markdown(text):
+    """Очистка маркдауна от изображений и ссылок"""
+    # Удалить изображения
+    text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
+    # Удалить ссылки, оставив только текст
+    text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
+    # Заменить h-теги на маркдаун-формат
+    text = re.sub(r'<h[1-6]>(.*?)<\/h[1-6]>', r'### \1', text)
+    return text
 
-    articles_data = []
+def parse_article(url, driver):
+    try:
+        driver.get(url)
+        # Даем время для загрузки страницы
 
-    # Найти все элементы с классом 'header news-item-caption'
-    news_items = driver.find_elements(By.CLASS_NAME, 'news-item-caption')
+        # Найти все ссылки на странице
+        links = driver.find_elements(By.TAG_NAME, 'a')
+        article_links = [link.get_attribute('href') for link in links if link.get_attribute('href') and link.get_attribute('href').endswith('.html')]
 
-    for item in news_items:
-        try:
-            # Извлечь категорию и дату
-            category_date = item.find_element(By.CLASS_NAME, 'news-item-caption__category').text.strip()
-            
-            # Извлечь заголовок
-            title_element = item.find_element(By.CLASS_NAME, 'news-item-caption__text')
-            title = title_element.text.strip()
-            
-            # Извлечь ссылку
-            link = title_element.find_element(By.TAG_NAME, 'a').get_attribute('href').strip()
+        initial_article_count = len(article_links)
+        articles_data = []
 
-            # Открыть статью и извлечь контент
-            driver.get(link)
-            time.sleep(5)  # Даем время для загрузки страницы
-
+        for link in article_links:
             try:
-                # Здесь измените селектор на тот, который соответствует содержимому статьи
+                # Открыть статью и извлечь контент
+                driver.get(link)
+                
+
+                # Измените селектор на тот, который соответствует содержимому статьи
+                title_element = driver.find_element(By.CSS_SELECTOR, '.afigure-title')
+                title = title_element.text.strip()
+
                 content_element = driver.find_element(By.CSS_SELECTOR, '.article-content')
-                content = content_element.text.strip()
+                content_html = content_element.get_attribute('innerHTML').strip()
+
+                # Преобразовать HTML в Markdown и очистить контент
+                markdown_content = clean_markdown(md(content_html))
+
+                # Сохранить данные в словарь
+                article_data = {
+                    'title': title,
+                    'ArticleTextMarkdown': markdown_content,
+                    'ArticleTextHTML': content_html
+                }
+
+                # Проверить на дубли
+                if article_data not in articles_data and markdown_content != "Контент не найден":
+                    articles_data.append(article_data)
+
+                # Вернуться на главную страницу с новостями
+                driver.back()
+  
+
             except Exception as e:
-                print(f"Ошибка при извлечении контента статьи: {e}")
-                content = "Контент не найден"
+                print(f"Ошибка при обработке элемента: {e}")
 
-            # Вернуться на главную страницу с новостями
-            driver.back()
-            time.sleep(5)  # Даем время для загрузки страницы
+        final_article_count = len(articles_data)
+        print(f"Найдено статей на странице: {initial_article_count}")
+        print(f"Успешно спарсено и сохранено статей: {final_article_count}")
 
-            # Сохранить данные в словарь
-            articles_data.append({
-                'category_date': category_date,
-                'title': title,
-                'link': link,
-                'content': content
-            })
-        except Exception as e:
-            print(f"Ошибка при обработке элемента: {e}")
+        return articles_data
 
-    # Конвертировать данные в JSON
-    articles_json = json.dumps(articles_data, ensure_ascii=False, indent=4)
-    print(articles_json)
+    except Exception as e:
+        print(f"Ошибка при парсинге страницы: {e}")
+        return []
 
-except Exception as ex:
-    print(ex)
-finally:
-    driver.close()
-    driver.quit()
+def save_to_json(data, filename):
+    """Сохранение данных в JSON-файл"""
+    try:
+        with open(filename, 'r', encoding='utf-8') as f:
+            existing_data = json.load(f)
+    except FileNotFoundError:
+        existing_data = []
+
+    existing_data.extend(data)
+
+    with open(filename, 'w', encoding='utf-8') as f:
+        json.dump(existing_data, f, ensure_ascii=False, indent=4)
+
+    print(f"Данные сохранены в файл: {filename}")
+
+def main():
+    try:
+        url_file = 'urls.txt'
+        json_file = 'articles_data.json'
+
+        if not os.path.exists(url_file):
+            print(f"Файл {url_file} не найден.")
+            return
+
+        with open(url_file, 'r', encoding='utf-8') as f:
+            urls = [line.strip() for line in f if line.strip()]
+
+        for url in urls:
+            articles_data = parse_article(url, driver)
+            if articles_data:
+                save_to_json(articles_data, json_file)
+
+        # Валидировать JSON-файл
+        try:
+            df = pd.read_json(json_file)
+            print("JSON-файл сформирован корректно.")
+        except ValueError as e:
+            print(f"Ошибка при валидации JSON-файла: {e}")
+
+    except Exception as ex:
+        print(ex)
+    finally:
+        driver.close()
+        driver.quit()
+
+if __name__ == "__main__":
+    main()
