@@ -20,69 +20,82 @@ driver = webdriver.Chrome(service=s, options=options)
 
 def clean_markdown(text):
     """Очистка маркдауна от изображений и ссылок"""
-    # Удалить изображения
     text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
-    # Удалить ссылки, оставив только текст
     text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
-    # Заменить h-теги на маркдаун-формат
     text = re.sub(r'<h[1-6]>(.*?)<\/h[1-6]>', r'### \1', text)
     return text
 
-def parse_article(url, driver):
+def parse_article(url, driver, max_articles=500):
+    articles_data = []
+    parsed_titles = set()
+
     try:
         driver.get(url)
-        # Даем время для загрузки страницы
+       
 
-        # Найти все ссылки на странице
-        links = driver.find_elements(By.TAG_NAME, 'a')
-        article_links = [link.get_attribute('href') for link in links if link.get_attribute('href') and link.get_attribute('href').endswith('.html')]
+        while len(articles_data) < max_articles:
+            # Получаем все статьи на странице
+            links = driver.find_elements(By.TAG_NAME, 'a')
+            article_links = [link.get_attribute('href') for link in links if link.get_attribute('href') and link.get_attribute('href').endswith('.html')]
+            article_links = list(set(article_links))  # Убираем дублирующиеся ссылки
 
-        initial_article_count = len(article_links)
-        articles_data = []
+            for article_link in article_links:
+                if len(articles_data) >= max_articles:
+                    break
 
-        for link in article_links:
-            try:
-                # Открыть статью и извлечь контент
-                driver.get(link)
+                # Открываем статью в новой вкладке
+                driver.execute_script("window.open(arguments[0], '_blank');", article_link)
+                driver.switch_to.window(driver.window_handles[-1])
                 
 
-                # Измените селектор на тот, который соответствует содержимому статьи
-                title_element = driver.find_element(By.CSS_SELECTOR, '.afigure-title')
-                title = title_element.text.strip()
+                try:
+                    title_element = driver.find_element(By.CSS_SELECTOR, '.afigure-title')
+                    title = title_element.text.strip()
 
-                content_element = driver.find_element(By.CSS_SELECTOR, '.article-content')
-                content_html = content_element.get_attribute('innerHTML').strip()
+                    if title in parsed_titles:
+                        driver.close()  # Закрываем вкладку с текущей статьей
+                        driver.switch_to.window(driver.window_handles[0])  # Переключаемся обратно на основную вкладку
+                        continue
 
-                # Преобразовать HTML в Markdown и очистить контент
-                markdown_content = clean_markdown(md(content_html))
+                    content_element = driver.find_element(By.CSS_SELECTOR, '.article-content')
+                    content_html = content_element.get_attribute('innerHTML').strip()
 
-                # Сохранить данные в словарь
-                article_data = {
-                    'title': title,
-                    'ArticleTextMarkdown': markdown_content,
-                    'ArticleTextHTML': content_html
-                }
+                    # Преобразовать HTML в Markdown и очистить контент
+                    markdown_content = clean_markdown(md(content_html))
 
-                # Проверить на дубли
-                if article_data not in articles_data and markdown_content != "Контент не найден":
-                    articles_data.append(article_data)
+                    # Сохранить данные в словарь
+                    article_data = {
+                        'title': title,
+                        'ArticleTextMarkdown': markdown_content,
+                        'ArticleTextHTML': content_html
+                    }
 
-                # Вернуться на главную страницу с новостями
-                driver.back()
-  
+                    if markdown_content != "Контент не найден":
+                        articles_data.append(article_data)
+                        parsed_titles.add(title)
 
+                except Exception as e:
+                    print(f"Ошибка при обработке элемента: {e}")
+                finally:
+                    driver.close()  # Закрываем вкладку с текущей статьей
+                    driver.switch_to.window(driver.window_handles[0])  # Переключаемся обратно на основную вкладку
+
+            # Проверяем наличие кнопки "Показать еще"
+            try:
+                button = driver.find_element(By.ID, 'show-more-link')
+                driver.execute_script("arguments[0].click();", button)
+                time.sleep(5)  # Даем время для загрузки дополнительных статей
             except Exception as e:
-                print(f"Ошибка при обработке элемента: {e}")
+                print("Кнопка 'Показать еще' не найдена или произошла ошибка: ", e)
+                break  # Если кнопка не найдена или произошла ошибка, выходим из цикла
 
         final_article_count = len(articles_data)
-        print(f"Найдено статей на странице: {initial_article_count}")
         print(f"Успешно спарсено и сохранено статей: {final_article_count}")
-
-        return articles_data
 
     except Exception as e:
         print(f"Ошибка при парсинге страницы: {e}")
-        return []
+
+    return articles_data
 
 def save_to_json(data, filename):
     """Сохранение данных в JSON-файл"""
