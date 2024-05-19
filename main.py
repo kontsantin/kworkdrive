@@ -40,15 +40,16 @@ def parse_article(url, driver, max_articles=1):
         driver.get(url)
       
 
-        while len(articles_data) < max_articles:
+        while True:
             # Получаем все статьи на странице
             article_elements = driver.find_elements(By.CSS_SELECTOR, 'a[href*=".html"]')
             article_links = [element.get_attribute('href') for element in article_elements]
             article_links = list(dict.fromkeys(article_links))  # Убираем дублирующиеся ссылки
 
             for article_link in article_links:
-                if len(articles_data) >= max_articles:
-                    break
+                if max_articles is not None and len(articles_data) >= max_articles:
+                    print(f"Достигнуто максимальное количество статей: {max_articles}. Парсинг завершен.")
+                    return articles_data
 
                 # Открываем статью в новой вкладке
                 driver.execute_script("window.open(arguments[0], '_blank');", article_link)
@@ -129,12 +130,19 @@ def parse_article(url, driver, max_articles=1):
                 driver.execute_script("arguments[0].click();", button)
                 time.sleep(5)  # Даем время для загрузки дополнительных статей
             except NoSuchElementException:
-                print("Кнопка 'Показать еще' не найдена. Переходим к следующему URL.")
-                break  # Если кнопка не найдена, выходим из цикла
-            except ElementNotInteractableException as e:
-                print(f"Кнопка 'Показать еще' не может быть нажата: {e}")
-                break
-
+                print("Кнопка 'Показать еще' не найдена. Проверяем пагинацию.")
+                try:
+                    paginator = driver.find_element(By.CLASS_NAME, 'paginator')
+                    next_page_link = paginator.find_element(By.XPATH, './a[contains(text(), "Вперед")]')
+                    next_page_link.click()
+                    time.sleep(5)  # Даем время для загрузки следующей страницы
+                except NoSuchElementException:
+                    print("Пагинация не найдена. Парсинг завершен.")
+                    break  # Если кнопка "Вперед" не найдена, выходим из цикла пагинации
+                except ElementNotInteractableException as e:
+                    print(f"Кнопка 'Вперед' не может быть нажата: {e}")
+                    break
+                
         final_article_count = len(articles_data)
         print(f"Успешно спарсено и сохранено статей: {final_article_count}")
 
